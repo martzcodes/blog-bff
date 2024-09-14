@@ -1,16 +1,167 @@
-import * as cdk from 'aws-cdk-lib';
-import { Construct } from 'constructs';
-// import * as sqs from 'aws-cdk-lib/aws-sqs';
+import {
+  Aspects,
+  CfnOutput,
+  IAspect,
+  RemovalPolicy,
+  Stack,
+  StackProps,
+  Tokenization,
+} from "aws-cdk-lib";
+import {
+  RestApi,
+  EndpointType,
+  LogGroupLogDestination,
+  AccessLogFormat,
+  HttpIntegration,
+  PassthroughBehavior,
+  AwsIntegration,
+  IntegrationOptions,
+  MethodOptions,
+  AuthorizationType,
+  ApiKey,
+  UsagePlan,
+  Stage,
+  CfnUsagePlan,
+} from "aws-cdk-lib/aws-apigateway";
+import { PolicyStatement, Role, ServicePrincipal } from "aws-cdk-lib/aws-iam";
+import { LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
+import { Construct, IConstruct } from "constructs";
 
-export class BlogBffStack extends cdk.Stack {
-  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+export interface BlogBffStackProps extends StackProps {
+  externalApis: Record<string, string>;
+}
+
+class AddApisToUsagePlanAspect implements IAspect {
+  private readonly externalApiIds: string[];
+
+  constructor(externalApiIds: string[]) {
+    this.externalApiIds = externalApiIds;
+  }
+
+  public visit(node: IConstruct): void {
+    if (node instanceof UsagePlan) {
+      const usagePlan = node as UsagePlan;
+      const cfnUsagePlan = usagePlan.node.defaultChild as CfnUsagePlan;
+      const existingApiStages = Array.isArray(cfnUsagePlan.apiStages)
+        ? cfnUsagePlan.apiStages
+        : [];
+      console.log(JSON.stringify(existingApiStages));
+
+      // Add the external API to the usage plan
+      cfnUsagePlan.apiStages = this.externalApiIds.map((apiId) => ({
+        apiId,
+        stage: "prod",
+      })) as any;
+    }
+  }
+}
+
+export class BlogBffStack extends Stack {
+  constructor(scope: Construct, id: string, props: BlogBffStackProps) {
     super(scope, id, props);
 
-    // The code that defines your stack goes here
+    const apiKey = new ApiKey(this, `BFFApiKey`, {
+      apiKeyName: `BFFApiKey`,
+    });
 
-    // example resource
-    // const queue = new sqs.Queue(this, 'BlogBffQueue', {
-    //   visibilityTimeout: cdk.Duration.seconds(300)
-    // });
+    const logs = new LogGroup(this, `/BFFApiLogs`, {
+      logGroupName: `/BFFApi`,
+      retention: RetentionDays.ONE_WEEK,
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+
+    const api = new RestApi(this, `BFFApi`, {
+      description: `BFF API`,
+      endpointConfiguration: {
+        types: [EndpointType.REGIONAL],
+      },
+      defaultMethodOptions: {
+        apiKeyRequired: true,
+      },
+      deployOptions: {
+        dataTraceEnabled: true,
+        tracingEnabled: true,
+        metricsEnabled: true,
+        accessLogDestination: new LogGroupLogDestination(logs),
+        accessLogFormat: AccessLogFormat.jsonWithStandardFields(),
+      },
+    });
+    const usersApiId = "86qmfc4dy1";
+    const plan = new UsagePlan(this, "BFFUsagePlan", {
+      name: "BFFUsagePlan",
+      apiStages: [],
+    });
+    plan.addApiKey(apiKey);
+
+    Aspects.of(this).add(
+      new AddApisToUsagePlanAspect([api.restApiId, usersApiId])
+    );
+
+    const integrationOptions: IntegrationOptions = {
+      passthroughBehavior: PassthroughBehavior.WHEN_NO_MATCH,
+      requestParameters: {
+        "integration.request.path.proxy": "method.request.path.proxy",
+      },
+      requestTemplates: {
+        "application/json":
+          "{\n" +
+          "  \"body\" : $input.json('$'),\n" +
+          '  "headers": {\n' +
+          "    #foreach($header in $input.params().header.keySet())\n" +
+          '    "$header": "$util.escapeJavaScript($input.params().header.get($header))"\n' +
+          "    #if($foreach.hasNext),#end\n" +
+          "    #end\n" +
+          "  },\n" +
+          '  "method": "$context.httpMethod",\n' +
+          '  "params": {\n' +
+          "    #foreach($param in $input.params().path.keySet())\n" +
+          '    "$param": "$util.escapeJavaScript($input.params().path.get($param))"\n' +
+          "    #if($foreach.hasNext),#end\n" +
+          "    #end\n" +
+          "  },\n" +
+          '  "query": {\n' +
+          "    #foreach($queryParam in $input.params().querystring.keySet())\n" +
+          '    "$queryParam": "$util.escapeJavaScript($input.params().querystring.get($queryParam))"\n' +
+          "    #if($foreach.hasNext),#end\n" +
+          "    #end\n" +
+          "  }\n" +
+          "}\n",
+      },
+      integrationResponses: [
+        {
+          statusCode: "200",
+          responseParameters: {
+            "method.response.header.Access-Control-Allow-Origin": "'*'",
+          },
+        },
+      ],
+    };
+
+    const httpIntegration = new HttpIntegration(
+      `https://${usersApiId}.execute-api.us-east-1.amazonaws.com/prod/{proxy}`,
+      {
+        options: integrationOptions,
+        proxy: true,
+        httpMethod: "ANY",
+      }
+    );
+
+    api.root.addResource("users").addProxy({
+      anyMethod: true,
+      defaultIntegration: httpIntegration,
+      defaultMethodOptions: {
+        requestParameters: {
+          "method.request.path.proxy": true,
+        },
+        methodResponses: [
+          {
+            statusCode: "200",
+            responseParameters: {
+              "method.response.header.Access-Control-Allow-Origin": true,
+            },
+          },
+        ],
+      },
+    });
   }
 }

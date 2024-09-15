@@ -42,6 +42,9 @@ export class BlogBffProjectStack extends Stack {
       entry: join(__dirname, './lambdas/hello.ts'),
       logRetention: RetentionDays.ONE_WEEK,
       runtime: Runtime.NODEJS_LATEST,
+      environment: {
+        PROJECT_NAME: projectName,
+      },
     });
 
     const proxyIntegration = new LambdaIntegration(fn, {

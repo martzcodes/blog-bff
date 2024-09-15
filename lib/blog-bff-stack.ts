@@ -1,11 +1,9 @@
 import {
   Aspects,
-  CfnOutput,
   IAspect,
   RemovalPolicy,
   Stack,
   StackProps,
-  Tokenization,
 } from "aws-cdk-lib";
 import {
   RestApi,
@@ -14,16 +12,11 @@ import {
   AccessLogFormat,
   HttpIntegration,
   PassthroughBehavior,
-  AwsIntegration,
   IntegrationOptions,
-  MethodOptions,
-  AuthorizationType,
   ApiKey,
   UsagePlan,
-  Stage,
   CfnUsagePlan,
 } from "aws-cdk-lib/aws-apigateway";
-import { PolicyStatement, Role, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
 import { Construct, IConstruct } from "constructs";
 
@@ -86,7 +79,6 @@ export class BlogBffStack extends Stack {
         accessLogFormat: AccessLogFormat.jsonWithStandardFields(),
       },
     });
-    const usersApiId = "86qmfc4dy1";
     const plan = new UsagePlan(this, "BFFUsagePlan", {
       name: "BFFUsagePlan",
       apiStages: [],
@@ -94,7 +86,10 @@ export class BlogBffStack extends Stack {
     plan.addApiKey(apiKey);
 
     Aspects.of(this).add(
-      new AddApisToUsagePlanAspect([api.restApiId, usersApiId])
+      new AddApisToUsagePlanAspect([
+        api.restApiId,
+        ...Object.values(props.externalApis),
+      ])
     );
 
     const integrationOptions: IntegrationOptions = {
@@ -137,31 +132,33 @@ export class BlogBffStack extends Stack {
       ],
     };
 
-    const httpIntegration = new HttpIntegration(
-      `https://${usersApiId}.execute-api.us-east-1.amazonaws.com/prod/{proxy}`,
-      {
-        options: integrationOptions,
-        proxy: true,
-        httpMethod: "ANY",
-      }
-    );
+    Object.entries(props.externalApis).forEach(([apiName, apiId]) => {
+      const httpIntegration = new HttpIntegration(
+        `https://${apiId}.execute-api.us-east-1.amazonaws.com/prod/{proxy}`,
+        {
+          options: integrationOptions,
+          proxy: true,
+          httpMethod: "ANY",
+        }
+      );
 
-    api.root.addResource("users").addProxy({
-      anyMethod: true,
-      defaultIntegration: httpIntegration,
-      defaultMethodOptions: {
-        requestParameters: {
-          "method.request.path.proxy": true,
-        },
-        methodResponses: [
-          {
-            statusCode: "200",
-            responseParameters: {
-              "method.response.header.Access-Control-Allow-Origin": true,
-            },
+      api.root.addResource(apiName.toLowerCase()).addProxy({
+        anyMethod: true,
+        defaultIntegration: httpIntegration,
+        defaultMethodOptions: {
+          requestParameters: {
+            "method.request.path.proxy": true,
           },
-        ],
-      },
+          methodResponses: [
+            {
+              statusCode: "200",
+              responseParameters: {
+                "method.response.header.Access-Control-Allow-Origin": true,
+              },
+            },
+          ],
+        },
+      });
     });
   }
 }

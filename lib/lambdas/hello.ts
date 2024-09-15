@@ -7,7 +7,7 @@ export const handler = async (
   return {
     statusCode: 200,
     body: JSON.stringify({
-      message: `Hello World! (${Math.random()})`,
+      message: `Hello ${process.env.PROJECT_NAME}! (${Math.random()})`,
       event,
     }, null, 2),
   };
